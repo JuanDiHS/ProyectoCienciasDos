@@ -1,9 +1,0 @@
-[project]
-name = "transport_opt"
-version = "0.0.1"
-description = "Optimización del sistema de transporte Bogotá (modular)"
-requires-python = ">=3.8"
-
-[build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
