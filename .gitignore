@@ -1,0 +1,7 @@
+# Ignorar archivos gigantes de procesamiento automático
+data/processed/
+data/raw/*.zip
+
+# Archivos de entorno
+.venv/
+__pycache__/
