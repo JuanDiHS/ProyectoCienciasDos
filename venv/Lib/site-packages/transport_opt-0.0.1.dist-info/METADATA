@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: transport_opt
+Version: 0.0.1
+Summary: Optimización del sistema de transporte Bogotá (modular)
+Requires-Python: >=3.8

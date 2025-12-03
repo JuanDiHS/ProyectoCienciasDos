@@ -18,4 +18,5 @@ src/transport_opt/sim/simulator.py
 src/transport_opt/viz/__init__.py
 src/transport_opt/viz/visualizer.py
 tests/test_bplustree.py
+tests/test_graph_algorithms.py
 tests/test_graph_algos.py

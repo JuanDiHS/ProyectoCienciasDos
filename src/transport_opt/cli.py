@@ -1,43 +1,84 @@
-from transport_opt.utils import build_sample_bogota_network, build_capacity_from_graph
-from transport_opt.db.bplustree import BPlusTree
-from transport_opt.sim.simulator import Simulator
-from transport_opt.graph.algorithms import shortest_path, kruskal_mst, edmonds_karp
-from transport_opt.viz.visualizer import visualize_graph
+# src/transport_opt/cli.py
+import argparse
+import pickle
+import os
+import sys
 
-def main_demo():
-    print("Construyendo red simplificada...")
-    g = build_sample_bogota_network()
+from transport_opt.graph.algorithms import shortest_path, astar, default_heuristic_factory, build_stops_info_from_bpt
 
-    bpt = BPlusTree(order=4)
-    for n in g.nodes:
-        info = {'id': n, 'type': ('metro' if n.startswith('M') else 'tm' if n.startswith('T') else 'sitp'), 'capacity_est': 1000 if n.startswith('M') else 600 if n.startswith('T') else 200}
-        bpt.insert(n, info)
-    print("B+ search M2:", bpt.search('M2'))
+# visualización opcional
+try:
+    from transport_opt.viz.visualizer import visualize_path
+    HAS_VIS = True
+except Exception:
+    HAS_VIS = False
 
-    print("Shortest path S1 -> M4:", shortest_path(g, 'S1', 'M4'))
-    demand = [('S1','M4',300), ('S2','T5',180), ('M1','M4',800), ('S3','T1',120)]
-    sim = Simulator(g, demand).run()
-    print("Avg travel time:", sim['avg_travel_time'])
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DEFAULT_GRAPH_PATH = os.path.join(PROJECT_ROOT, "data", "processed", "gtfs_graph.pkl")
+DEFAULT_BPT_PATH = os.path.join(PROJECT_ROOT, "data", "processed", "gtfs_bpt.pkl")
 
-    capacity = build_capacity_from_graph(g, base_capacity_per_minute=30)
-    capacity['SRC'] = {}
-    capacity['SNK'] = {}
-    for origin, dest, rate in demand:
-        ppm = max(1, int(rate/60))
-        capacity['SRC'][origin] = capacity['SRC'].get(origin, 0) + ppm
-    for node in g.nodes:
-        capacity.setdefault(node, {})
-    capacity['M4']['SNK'] = 10000
 
-    maxflow, flow = edmonds_karp(capacity, 'SRC', 'SNK')
-    print("Max flow:", maxflow)
-    mst, total_w = kruskal_mst(g)
-    print("MST weight:", total_w)
+def load_graph(path: str = DEFAULT_GRAPH_PATH):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"No se encontró el grafo en {path}. Genera el grafo con scripts/load_gtfs.py")
+    with open(path, "rb") as f:
+        return pickle.load(f)
 
-    try:
-        visualize_graph(g, edge_load=sim['edge_load'])
-    except Exception:
-        pass
+
+def load_bpt(path: str = DEFAULT_BPT_PATH):
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def cmd_route(args):
+    g = load_graph(args.graph) if args.graph else load_graph()
+    bpt = load_bpt(args.bpt) if args.bpt else load_bpt()
+
+    if args.method == "dijkstra":
+        path, cost = shortest_path(g, args.src, args.dst)
+    else:  # astar
+        heuristic = None
+        if args.use_heuristic:
+            # construir stops_info desde bpt (fallback a {})
+            stops_info = build_stops_info_from_bpt(bpt) if bpt else {}
+            heuristic = default_heuristic_factory(stops_info)
+        path, cost = astar(g, args.src, args.dst, heuristic=heuristic)
+
+    print("=== RESULTADO ===")
+    print("Origen:", args.src)
+    print("Destino:", args.dst)
+    print("Método:", args.method, "| Usar heurística:", args.use_heuristic)
+    print("Coste (min):", cost)
+    print("Path length:", len(path) if path else 0)
+    print("Path:", path)
+
+    if args.plot:
+        if not HAS_VIS:
+            print("Visualización no disponible. Instala networkx y matplotlib.")
+        else:
+            visualize_path(g, path, title=f"Ruta: {args.src} → {args.dst} ({args.method})")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="transport_opt")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pr = sub.add_parser("route", help="Buscar ruta entre dos paradas")
+    pr.add_argument("--from", dest="src", required=True, help="stop_id origen")
+    pr.add_argument("--to", dest="dst", required=True, help="stop_id destino")
+    pr.add_argument("--method", choices=["dijkstra", "astar"], default="dijkstra")
+    pr.add_argument("--use-heuristic", action="store_true", help="Usar heurística (solo para astar)")
+    pr.add_argument("--graph", help="Ruta al archivo pkl del grafo (opcional)")
+    pr.add_argument("--bpt", help="Ruta al archivo pkl del B+Tree con stops (opcional)")
+    pr.add_argument("--plot", action="store_true", help="Mostrar gráfica de la ruta (si hay dependencias)")
+
+    args = p.parse_args()
+    if args.cmd == "route":
+        cmd_route(args)
+
 
 if __name__ == "__main__":
-    main_demo()
+    main()
+

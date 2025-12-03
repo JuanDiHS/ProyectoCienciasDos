@@ -1,83 +1,181 @@
 # scripts/load_gtfs.py
 """
-Script para cargar un GTFS ZIP, construir el grafo y persistir artefactos procesados.
-Uso: desde la raíz del proyecto (la carpeta que contiene src/, data/, etc.)
-    python .\scripts\load_gtfs.py
+Script mejorado para cargar GTFS ZIP, construir el grafo y persistir artefactos procesados.
+Uso (ejemplo):
+    python .\scripts\load_gtfs.py \
+        --zip data/raw/sitp_gtfs.zip \
+        --out data/processed --run run_auto \
+        --compress --save-bpt
+
+Por defecto intenta guardar en data/processed/run_auto.
 """
 from pathlib import Path
 import pickle
 import sys
+import argparse
+import gzip
+import math
 
-# intentamos importar el loader y la función de guardado
+# import loader
 try:
     from transport_opt.graph.loaders import build_graph_from_gtfs
 except Exception as e:
     print("ERROR: No se pudo importar build_graph_from_gtfs. Asegúrate de estar ejecutando desde la raíz del proyecto")
-    print("y de que el paquete transport_opt esté accesible (usa python -m pip install pandas numpy si falta).")
     raise
 
+# optional helper save function (no obligatorio)
 try:
-    from transport_opt.io import save_processed_artifacts
+    from transport_opt.io import save_processed_artifacts  # si lo implementaste
 except Exception:
-    # si no existe el módulo io, intentamos import desde utils o simplemente saltamos el guardado modular
     save_processed_artifacts = None
 
-def main():
-    ROOT = Path(__file__).resolve().parents[1]  # proyecto root
-    zip_path = ROOT / "data" / "raw" / "sitp_gtfs.zip"
+def save_pickle_gz(obj, path: Path):
+    """Guarda objeto por pickle comprimido (gzip)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(path, "wb") as fh:
+        pickle.dump(obj, fh, protocol=pickle.HIGHEST_PROTOCOL)
 
+def write_edges_csv_gz(graph, path: Path, dedupe=True):
+    """
+    Escribe edges a CSV comprimido. Si dedupe=True y el grafo no es dirigido,
+    evita escribir (v,u) si ya se escribió (u,v).
+    """
+    try:
+        import pandas as pd
+    except Exception:
+        print("AVISO: pandas no instalado. No se exportará CSV. Instala pandas si quieres CSV.")
+        return False
+
+    seen = set()
+    rows = []
+    for u in graph.adj:
+        for v, w in graph.adj[u]:
+            if dedupe and not graph.directed:
+                key = (u, v) if u <= v else (v, u)
+                if key in seen:
+                    continue
+                seen.add(key)
+            rows.append({"u": u, "v": v, "w": float(w)})
+    df = pd.DataFrame(rows)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # write compressed csv
+    df.to_csv(path, index=False, compression="gzip")
+    return True
+
+def main(argv=None):
+    argv = argv or sys.argv[1:]
+    p = argparse.ArgumentParser(description="Construye grafo desde GTFS y guarda artefactos procesados")
+    p.add_argument("--zip", "-z", type=str, default="data/raw/sitp_gtfs.zip", help="Ruta al zip GTFS")
+    p.add_argument("--out", "-o", type=str, default="data/processed", help="Directorio base de salida")
+    p.add_argument("--run", "-r", type=str, default="run_auto", help="Nombre de ejecución (subcarpeta)")
+    p.add_argument("--no-save", action="store_true", help="No guardar artefactos (solo construir y mostrar resumen)")
+    p.add_argument("--compress", action="store_true", help="Guardar pickle en gzip (.pkl.gz)")
+    p.add_argument("--save-bpt", action="store_true", help="Guardar B+Tree como pickle (comprimido si --compress)")
+    p.add_argument("--dedupe-edges", action="store_true", help="Eliminar duplicados en export CSV (útil para grafos no dirigidos)")
+    args = p.parse_args(argv)
+
+    zip_path = Path(args.zip)
     if not zip_path.exists():
         print("ERROR: no encontré el archivo GTFS en:", zip_path)
-        print("Coloca el zip en data/raw/ y vuelve a ejecutar.")
         sys.exit(1)
 
-    print("GTFS zip path:", zip_path)
-    print("Construyendo grafo desde GTFS (esto puede tardar unos segundos/minutos según el tamaño)...")
-    g, bpt = build_graph_from_gtfs(str(zip_path))
+    out_dir = Path(args.out) / args.run
+    out_dir.mkdir(parents=True, exist_ok=True)
 
+    print("GTFS zip path:", zip_path)
+    print("Construyendo grafo desde GTFS (esto puede tardar varios minutos según el tamaño)...")
+
+    g, bpt = build_graph_from_gtfs(str(zip_path))
     print("Grafo construido. Nodos (stops):", len(g.nodes))
-    # imprimir una muestra de aristas para sanity-check
+
+    # muestra de aristas (sanity-check)
     sample_edges = []
-    for u in list(g.adj.keys())[:10]:
+    cnt = 0
+    for u in list(g.adj.keys())[:20]:
         for v,w in g.adj[u][:5]:
             sample_edges.append((u, v, w))
+            cnt += 1
+            if cnt >= 50:
+                break
+        if cnt >= 50:
+            break
     print("Muestra de aristas (hasta 50):", sample_edges[:50])
 
-    # Guardado: si existe save_processed_artifacts, lo usamos; si no, guardamos manualmente en data/processed/run_...
+    if args.no_save:
+        print("No se guardaron artefactos por --no-save. Fin.")
+        return 0
+
+    # If there's a modular saver use it (custom transport_opt.io)
     if save_processed_artifacts is not None:
-        out_dir = save_processed_artifacts(g, bpt, ROOT)
-        print("Artifacts guardados en (via transport_opt.io):", out_dir)
-    else:
-        # guardado manual (compatibilidad si no existe transport_opt.io)
-        processed_dir = ROOT / "data" / "processed"
-        processed_dir.mkdir(parents=True, exist_ok=True)
-        run_name = "run_auto"
-        out_dir = processed_dir / run_name
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        # grafo pickle
-        with open(out_dir / "gtfs_graph.pkl", "wb") as fh:
-            pickle.dump(g, fh)
-
-        # edges CSV
         try:
-            import pandas as pd
-        except Exception:
-            print("AVISO: pandas no instalado. Instala pandas para exportar CSV (python -m pip install pandas).")
-            print("Se guardó solo el pickle del grafo:", out_dir / "gtfs_graph.pkl")
+            saved = save_processed_artifacts(g, bpt, out_dir.parent)
+            print("Artifacts guardados via transport_opt.io ->", saved)
+            return 0
+        except Exception as ex:
+            print("Warning: save_processed_artifacts falló:", ex)
+            print("Procediendo a guardado manual...")
+
+    # Guardado manual
+    print("Guardando artefactos en:", out_dir)
+    # 1) grafo pickle (comprimido si --compress)
+    graph_path = out_dir / "gtfs_graph.pkl.gz" if args.compress else out_dir / "gtfs_graph.pkl"
+    try:
+        if args.compress:
+            save_pickle_gz(g, graph_path)
         else:
-            edges = []
-            for u in g.adj:
-                for v,w in g.adj[u]:
-                    edges.append({"u": u, "v": v, "w": w})
-            pd.DataFrame(edges).to_csv(out_dir / "gtfs_edges.csv", index=False)
+            with open(graph_path, "wb") as fh:
+                pickle.dump(g, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        print("Guardado grafo en:", graph_path)
+    except Exception as ex:
+        print("ERROR guardando grafo:", ex)
 
-            if bpt:
-                pd.DataFrame(bpt.traverse_leaves(), columns=["stop_id", "metadata"]).to_csv(out_dir / "gtfs_stops.csv", index=False)
+    # 2) edges CSV (gzip) dedupe si se pidió
+    csv_path = out_dir / "gtfs_edges.csv.gz"
+    dedupe = bool(args.dedupe_edges) or (not g.directed)
+    csv_written = write_edges_csv_gz(g, csv_path, dedupe=dedupe)
+    if csv_written:
+        print("Guardado edges CSV (comprimido):", csv_path)
+    else:
+        print("No se generó CSV de edges (pandas no disponible)")
 
-        print("Artifacts guardados en (manual):", out_dir)
+    # 3) stops (B+Tree) -> guardar como CSV y/o pickle si se solicitó
+    if bpt is not None:
+        # CSV of stops (use traverse_leaves if available)
+        try:
+            leaves = bpt.traverse_leaves()
+            try:
+                import pandas as pd
+            except Exception:
+                # fallback plain text file
+                stops_txt = out_dir / "gtfs_stops.txt"
+                with open(stops_txt, "w", encoding="utf-8") as fh:
+                    for k, v in leaves:
+                        fh.write(f"{k}\t{v}\n")
+                print("Guardado stops en texto:", stops_txt)
+            else:
+                df = pd.DataFrame(leaves, columns=["stop_id", "metadata"])
+                df.to_csv(out_dir / "gtfs_stops.csv", index=False, compression="gzip")
+                print("Guardado stops CSV (gzip):", out_dir / "gtfs_stops.csv")
+        except Exception as ex:
+            print("Warning: no se pudo extraer leaves de B+Tree:", ex)
+
+        if args.save_bpt:
+            bpt_path = out_dir / ("gtfs_bpt.pkl.gz" if args.compress else "gtfs_bpt.pkl")
+            try:
+                if args.compress:
+                    save_pickle_gz(bpt, bpt_path)
+                else:
+                    with open(bpt_path, "wb") as fh:
+                        pickle.dump(bpt, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                print("Guardado B+Tree en:", bpt_path)
+            except Exception as ex:
+                print("ERROR guardando B+Tree:", ex)
+    else:
+        print("No se generó B+Tree (bpt is None)")
 
     print("Carga GTFS completada.")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
+
