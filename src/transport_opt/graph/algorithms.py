@@ -105,6 +105,7 @@ def default_heuristic_factory(stops_info: Dict[str, Dict[str, Any]], speed_kmh: 
     speed_kmh: velocidad supuesta para la estimación (km/h)
     """
     def heuristic(u: str, v: str) -> float:
+
         su = stops_info.get(u)
         sv = stops_info.get(v)
         if not su or not sv:
@@ -275,16 +276,32 @@ def edmonds_karp(capacity: Dict[str, Dict[str, int]], source: str, sink: str) ->
 # -------------------------
 # UTIL: construir stops_info desde B+Tree
 # -------------------------
+# -------------------------
+# UTIL: construir stops_info desde B+Tree
+# -------------------------
 def build_stops_info_from_bpt(bpt) -> Dict[str, Dict[str, Any]]:
     """
     Extrae dict stop_id -> {'lat':..., 'lon':...} recorriendo hojas del B+Tree.
     Asume que el valor almacenado para cada key tiene 'lat' y 'lon'.
-    Si bpt es None o no tiene método traverse_leaves(), devue_
+    Si bpt es None o no tiene método traverse_leaves(), devuelve {}.
     """
-def test_astar_basic():
-    g = Graph(directed=False)
-    g.add_edge("A","B",1)
-    g.add_edge("B","C",1)
-    path, dist = astar(g, "A", "C", heuristic=lambda u,v: 0.0)
-    assert path == ["A","B","C"]
-    assert dist == 2
+    info: Dict[str, Dict[str, Any]] = {}
+    if bpt is None:
+        return info
+    try:
+        leaves = bpt.traverse_leaves()
+    except Exception:
+        return info
+    for k, v in leaves:
+        if isinstance(v, dict):
+            lat = v.get('lat')
+            lon = v.get('lon')
+            info[str(k)] = {'lat': lat, 'lon': lon}
+        else:
+            # si el valor no es dict, intentamos interpretar como tupla/lista (compatibilidad)
+            try:
+                if isinstance(v, (list, tuple)) and len(v) >= 2:
+                    info[str(k)] = {'lat': v[0], 'lon': v[1]}
+            except Exception:
+                pass
+    return info

@@ -1,7 +1,21 @@
-# Ignorar archivos gigantes de procesamiento automático
-data/processed/
-data/raw/*.zip
-
-# Archivos de entorno
-.venv/
+# Python
 __pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# Env
+venv/
+.venv/
+.Python
+
+# Data
+data/raw/
+data/processed/
+*.pkl
+*.pkl.gz
+*.csv.gz
+
+# OS
+.DS_Store
+Thumbs.db
