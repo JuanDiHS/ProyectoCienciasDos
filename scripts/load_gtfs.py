@@ -36,10 +36,6 @@ def save_pickle_gz(obj, path: Path):
         pickle.dump(obj, fh, protocol=pickle.HIGHEST_PROTOCOL)
 
 def write_edges_csv_gz(graph, path: Path, dedupe=True):
-    """
-    Escribe edges a CSV comprimido. Si dedupe=True y el grafo no es dirigido,
-    evita escribir (v,u) si ya se escribió (u,v).
-    """
     try:
         import pandas as pd
     except Exception:
@@ -55,12 +51,35 @@ def write_edges_csv_gz(graph, path: Path, dedupe=True):
                 if key in seen:
                     continue
                 seen.add(key)
-            rows.append({"u": u, "v": v, "w": float(w)})
+
+            meta = {}
+            if hasattr(graph, 'edge_meta'):
+                meta = graph.edge_meta.get((u, v), {}) or graph.edge_meta.get((v, u), {}) or {}
+
+            trip_ids = list(meta.get('trip_ids', []))
+            route_ids = list(meta.get('route_ids', []))
+            modes = list(meta.get('modes', []))
+            headways = [h for h in meta.get('headways', []) if h is not None]
+
+            row = {
+                "u": u,
+                "v": v,
+                "w": float(w),
+                "trip_ids_count": len(trip_ids),
+                "trip_ids_sample": ",".join(trip_ids[:5]) if trip_ids else "",
+                "route_ids": ",".join(route_ids[:5]) if route_ids else "",
+                "mode": ",".join(modes[:2]) if modes else "",
+                "headway_min_secs": min(headways) if headways else None,
+                "headway_mean_secs": (sum(headways)/len(headways)) if headways else None
+            }
+            rows.append(row)
+
     df = pd.DataFrame(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # write compressed csv
     df.to_csv(path, index=False, compression="gzip")
     return True
+
+
 
 def main(argv=None):
     argv = argv or sys.argv[1:]
@@ -130,9 +149,11 @@ def main(argv=None):
         print("ERROR guardando grafo:", ex)
 
     # 2) edges CSV (gzip) dedupe si se pidió
-    csv_path = out_dir / "gtfs_edges.csv.gz"
+    csv_path = out_dir / "gtfs_edges_with_meta.csv.gz"
     dedupe = bool(args.dedupe_edges) or (not g.directed)
     csv_written = write_edges_csv_gz(g, csv_path, dedupe=dedupe)
+
+
     if csv_written:
         print("Guardado edges CSV (comprimido):", csv_path)
     else:

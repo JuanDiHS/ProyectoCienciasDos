@@ -1,20 +1,22 @@
 # scripts/run_congestion.py
 """
 Analizador de congestión simple:
-  - carga grafo procesado (data/processed/run_auto)
-  - construye capacidades por arista (heurística por tipo de parada)
+  - carga grafo procesado (data/processed/<run>)
+  - construye capacidades por arista (desde GTFS si está disponible, si no heurística)
   - construye super-source (SRC) y super-sink (SNK)
   - ejecuta edmonds_karp y muestra top-N aristas por utilización
 Uso:
-  python scripts/run_congestion.py --run run_auto --top 30
+  python scripts/run_congestion.py --run run_auto --top 30 --root .
 """
 import argparse
 from pathlib import Path
 from collections import defaultdict
 import math
+import time
 
 from transport_opt.io import load_graph_from_processed
 from transport_opt.graph.algorithms import edmonds_karp
+from transport_opt.graph.gtfs_utils import build_capacity_from_gtfs
 
 def build_capacity_from_graph(graph, base_capacity_per_minute=30):
     capacity = {}
@@ -22,7 +24,6 @@ def build_capacity_from_graph(graph, base_capacity_per_minute=30):
         capacity[u] = {}
     for u in graph.adj:
         for v, w in graph.adj[u]:
-            # heurística: metro (M) > tm (T) > sitp (S)
             cap = base_capacity_per_minute
             if str(u).startswith("M") or str(v).startswith("M"):
                 cap = int(base_capacity_per_minute * 3)
@@ -33,15 +34,36 @@ def build_capacity_from_graph(graph, base_capacity_per_minute=30):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--run", default="run_auto")
-    p.add_argument("--root", default=".")
-    p.add_argument("--top", type=int, default=20)
+    p.add_argument("--run", default="run_auto", help="Nombre del run en data/processed")
+    p.add_argument("--root", default=".", help="Ruta raíz del proyecto (contiene data/)")
+    p.add_argument("--top", type=int, default=20, help="Número de aristas top a mostrar")
+    p.add_argument("--gtfs", default=None, help="Ruta al zip GTFS (opcional). Si no se provee, se buscará data/raw/sitp_gtfs.zip")
     args = p.parse_args()
 
-    graph, bpt = load_graph_from_processed(Path(args.root), run_name=args.run)
+    ROOT = Path(args.root).resolve()
+    run_name = args.run
+    top_n = args.top
+
+    # Cargar grafo desde artifacts procesados
+    graph, bpt = load_graph_from_processed(ROOT, run_name=run_name)
     print("Grafo cargado. Nodos:", len(graph.nodes))
 
-    capacity = build_capacity_from_graph(graph, base_capacity_per_minute=30)
+    # Intentar crear capacity desde GTFS si existe
+    gtfs_path = Path(args.gtfs) if args.gtfs else (ROOT / "data" / "raw" / "sitp_gtfs.zip")
+    if gtfs_path.exists():
+        print("Construyendo capacidades desde GTFS:", gtfs_path)
+        t0 = time.time()
+        try:
+            capacity = build_capacity_from_gtfs(str(gtfs_path), graph)
+            print("Capacity built from GTFS (took {:.1f}s)".format(time.time() - t0))
+        except Exception as ex:
+            print("Warning: fallo al construir capacidad desde GTFS:", ex)
+            print("Usando heurística por prefijo de nodo.")
+            capacity = build_capacity_from_graph(graph)
+    else:
+        print("GTFS no encontrado en:", gtfs_path)
+        print("Usando heurística por prefijo de nodo.")
+        capacity = build_capacity_from_graph(graph)
 
     # elegir sink: nodo con mayor grado (hub)
     degs = [(len(graph.adj[n]), n) for n in graph.nodes]
@@ -49,21 +71,21 @@ def main():
     sink = degs[0][1]
     print("Seleccionado sink (hub):", sink)
 
-    # construir super-source SRC, conectarlo a todos nodos como orígenes con capacidad proporcional al grado
-    capacity["SRC"] = {}
+    # construir super-source SRC, conectarlo a todos nodos como orígenes
+    capacity.setdefault("SRC", {})
     for n in graph.nodes:
-        # aporte de origen; pequeño, ejemplo: degree passengers per minute
         cap = max(1, int(len(graph.adj[n]) * 2))
         capacity["SRC"][n] = cap
 
-    # conectar sinks al super-sink SNK
+    # asegurar que cada nodo tiene dict en capacity y conectar sink a SNK
     for n in graph.nodes:
         capacity.setdefault(n, {})
-    capacity[sink]["SNK"] = 100000  # sink con gran capacidad
+    capacity[sink]["SNK"] = 10**9  # sink con gran capacidad
 
     print("Ejecutando Edmonds-Karp (esto puede tardar un poco)...")
+    t0 = time.time()
     maxflow, flow = edmonds_karp(capacity, 'SRC', 'SNK')
-    print("Flujo máximo encontrado (pasajeros/min aprox):", maxflow)
+    print("Flujo máximo encontrado (pasajeros/min aprox):", maxflow, f"(took {time.time()-t0:.1f}s)")
 
     # calcular utilización por arista u->v
     utiliz = []
@@ -78,8 +100,9 @@ def main():
             util = f / cap
             utiliz.append((util, u, v, f, cap))
     utiliz.sort(reverse=True)
-    print("Top aristas por utilización:")
-    for util, u, v, f, cap in utiliz[:args.top]:
+
+    print(f"Top {top_n} aristas por utilización:")
+    for util, u, v, f, cap in utiliz[:top_n]:
         print(f"{u} -> {v} | utilization: {util:.2f} | flow={f} cap={cap}")
 
 if __name__ == "__main__":
