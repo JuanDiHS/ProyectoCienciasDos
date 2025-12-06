@@ -13,6 +13,7 @@ from pathlib import Path
 from collections import defaultdict
 import math
 import time
+from transport_opt.utils import load_stop_names
 
 from transport_opt.io import load_graph_from_processed
 from transport_opt.graph.algorithms import edmonds_karp
@@ -47,6 +48,12 @@ def main():
     # Cargar grafo desde artifacts procesados
     graph, bpt = load_graph_from_processed(ROOT, run_name=run_name)
     print("Grafo cargado. Nodos:", len(graph.nodes))
+    graph, bpt = load_graph_from_processed(Path(args.root), run_name=args.run)
+    processed_dir = Path(args.root) / "data" / "processed" / args.run
+    stop_names = load_stop_names(processed_dir, bpt=bpt)
+    def pretty_stop(sid):
+        return f"{stop_names.get(sid, sid)} ({sid})"
+
 
     # Intentar crear capacity desde GTFS si existe
     gtfs_path = Path(args.gtfs) if args.gtfs else (ROOT / "data" / "raw" / "sitp_gtfs.zip")
@@ -69,7 +76,8 @@ def main():
     degs = [(len(graph.adj[n]), n) for n in graph.nodes]
     degs.sort(reverse=True)
     sink = degs[0][1]
-    print("Seleccionado sink (hub):", sink)
+    print("Seleccionado sink (hub):", pretty_stop(sink))
+
 
     # construir super-source SRC, conectarlo a todos nodos como orígenes
     capacity.setdefault("SRC", {})
@@ -103,7 +111,8 @@ def main():
 
     print(f"Top {top_n} aristas por utilización:")
     for util, u, v, f, cap in utiliz[:top_n]:
-        print(f"{u} -> {v} | utilization: {util:.2f} | flow={f} cap={cap}")
+        print(f"{pretty_stop(u)} -> {pretty_stop(v)} | utilization: {util:.2f} | flow={f} cap={cap}")
+
 
 if __name__ == "__main__":
     main()

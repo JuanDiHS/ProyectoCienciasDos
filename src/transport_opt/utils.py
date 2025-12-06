@@ -1,27 +1,79 @@
-from transport_opt.graph.model import Graph
+from pathlib import Path
+import csv
+from typing import Dict, Any, Optional
 
-def build_sample_bogota_network() -> Graph:
-    g = Graph(directed=False)
-    nodes = ['M1','M2','M3','M4','T1','T2','T3','T4','T5','S1','S2','S3','S4','S5','S6']
-    for n in nodes:
-        g.add_node(n)
-    g.add_edge('M1','M2',4); g.add_edge('M2','M3',5); g.add_edge('M3','M4',6)
-    g.add_edge('T1','T2',3); g.add_edge('T2','T3',4); g.add_edge('T3','T4',4); g.add_edge('T4','T5',5)
-    g.add_edge('S1','S2',6); g.add_edge('S2','S3',7); g.add_edge('S3','S4',5); g.add_edge('S4','S5',6); g.add_edge('S5','S6',6)
-    g.add_edge('M2','T2',8); g.add_edge('M3','T4',10); g.add_edge('T1','S1',5); g.add_edge('T3','S3',4); g.add_edge('T5','S6',7)
-    g.add_edge('S2','T2',6); g.add_edge('S4','M4',12)
-    return g
+# ya tienes load_stop_names en este archivo; esta función la usa.
+# Pega esto al final de src/transport_opt/utils.py
 
-def build_capacity_from_graph(graph, base_capacity_per_minute=30):
-    capacity = {}
-    for u in graph.nodes:
-        capacity[u] = {}
-    for u in graph.adj:
-        for v, w in graph.adj[u]:
-            cap = base_capacity_per_minute
-            if u.startswith('M') or v.startswith('M'):
-                cap = int(base_capacity_per_minute * 3)
-            elif u.startswith('T') or v.startswith('T'):
-                cap = int(base_capacity_per_minute * 2)
-            capacity[u][v] = cap
-    return capacity
+def save_edge_load_named(sim_result: Dict[str, Any],
+                         out_dir: Path,
+                         processed_run_dir: Path,
+                         bpt: Optional[object] = None,
+                         filename: str = "edge_load_named.csv") -> Path:
+    """
+    Guarda un CSV legible con cargas por arista usando nombres de parada.
+
+    Args:
+      sim_result: resultado devuelto por Simulator.run(), debe contener "edge_load" dict.
+      out_dir: carpeta donde se guarda el CSV (Path o str).
+      processed_run_dir: carpeta data/processed/<run> para cargar nombres (Path o str).
+      bpt: si tienes el B+Tree, pásalo para obtener nombres más fiables (opcional).
+      filename: nombre del archivo CSV de salida.
+
+    Retorna:
+      Path al archivo guardado.
+    """
+    out_p = Path(out_dir)
+    out_p.mkdir(parents=True, exist_ok=True)
+
+    # intentar cargar pandas para salvar con mayor comodidad; si no, usa csv.writer
+    try:
+        import pandas as pd
+        use_pandas = True
+    except Exception:
+        use_pandas = False
+
+    # obtener mapa stop_id -> stop_name (usa la función existente)
+    try:
+        stop_names = load_stop_names(Path(processed_run_dir), bpt)
+    except Exception:
+        stop_names = {}
+
+    rows = []
+    edge_load = sim_result.get("edge_load", {})
+    for key, cnt in edge_load.items():
+        # key puede ser tupla (u,v) o string; normalizamos
+        if isinstance(key, (list, tuple)) and len(key) >= 2:
+            u, v = key[0], key[1]
+        else:
+            # si se guarda como "u|v" u otro formato, intentar parsear
+            ks = str(key)
+            if "|" in ks:
+                u, v = ks.split("|", 1)
+            elif "->" in ks:
+                u, v = ks.split("->", 1)
+            else:
+                # fallback: todo en u, v vacío
+                u, v = ks, ""
+        rows.append({
+            "u_id": u,
+            "u_name": stop_names.get(u, u),
+            "v_id": v,
+            "v_name": stop_names.get(v, v) if v else "",
+            "count": int(cnt)
+        })
+
+    out_file = out_p / filename
+
+    if use_pandas:
+        df = pd.DataFrame(rows, columns=["u_id","u_name","v_id","v_name","count"])
+        df.to_csv(out_file, index=False)
+    else:
+        # escritura CSV sin pandas
+        with open(out_file, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=["u_id","u_name","v_id","v_name","count"])
+            writer.writeheader()
+            for r in rows:
+                writer.writerow(r)
+
+    return out_file
